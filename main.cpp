@@ -129,10 +129,10 @@ int main() {
                 return;
             }
 
-            int machien_no{};
+            int machine_no{};
 
             try {
-                machien_no = std::stoi(req.get_param_value("machine_no"));
+                machine_no = std::stoi(req.get_param_value("machine_no"));
             } catch (const std::out_of_range &e) {
                 ErrorRespone resp;
                 resp.error_msg = std::format("参数 machine_no[{}] 超出范围! {}", req.get_param_value("machine_no"), e.what());
@@ -141,7 +141,7 @@ int main() {
                 return;
             }
 
-            int target_sevice = g_base_port + machien_no;
+            int target_sevice = g_base_port + machine_no;
 
             // 本地转发
             auto services = port_scanner.get_occupied_ports();
