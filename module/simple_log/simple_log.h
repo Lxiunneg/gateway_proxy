@@ -18,6 +18,7 @@ public:
 public:
     virtual void info(std::string_view) = 0;
     virtual void error(std::string_view) = 0;
+    virtual void warn(std::string_view) = 0;
     virtual ~SimpleLoggerInterface() = default;
 };
 
@@ -40,6 +41,8 @@ public:
     void info(std::string_view log) override;
 
     void error(std::string_view log) override;
+
+    void warn(std::string_view log) override;
 
 private:
     void init();

@@ -1,14 +1,15 @@
-// to_json.h
+// my_json.h
 #pragma once
 
 /**
  * ************************************************************************
  *
- * @file to_json.h
+ * @file my_json.h 要求 C++20 使用
  * @author 刘杰
- * @brief 基于 Boost.pfr、Jsoncpp 与 C++17折叠表达式,使 聚合POD 类型获得 '定义即序列化' 的能力，无需编写序列化接口，只出不进
- * json 与 STL 的对应关系
+ * @brief 序列化 to_json:: 基于 Boost.pfr、Jsoncpp 与 C++17折叠表达式,使 聚合POD 类型获得 '定义即序列化' 的能力，无需编写序列化接口，只出不进
+ *  json 与 STL 的对应关系
  *  json_array -> std::vector
+ * @brief 反序列化 from_json:: 提取json元素
  * ************************************************************************
  * ************************************************************************
  */
@@ -28,6 +29,7 @@
 #include <array>
 #include <type_traits>
 #include <fstream>
+#include <format> //
 
 namespace module::to_json {
 namespace pfr = boost::pfr;
@@ -134,4 +136,81 @@ static inline std::string dump(const Json::Value &j, int dent = 0) {
     writer->write(j, &os);
     return os.str();
 }
-} // namespace module
+} // namespace module::to_json
+
+/**
+ * ************************************************************************
+ * @brief from_json 只支持到 字段 级
+ *
+ * TODO: 2026年度 开发计划，递归嵌套级反序列到 组合式 POD
+ * ************************************************************************
+ */
+namespace module::from_json {
+template <typename T>
+concept FROM_JSON_TYPE =
+    std::is_same_v<T, std::string>
+    || std::is_same_v<T, int>
+    || std::is_same_v<T, float>
+    || std::is_same_v<T, bool>;
+
+namespace detail {
+template <FROM_JSON_TYPE T>
+static inline std::string get_expect_type() {
+    if constexpr (std::is_same_v<T, std::string>) {
+        return "String";
+    } else if constexpr (std::is_same_v<T, int>) {
+        return "Integer";
+    } else if constexpr (std::is_same_v<T, float>) {
+        return "Real";
+    } else if constexpr (std::is_same_v<T, bool>) {
+        return "Boolean";
+    }
+}
+} // namespace detail
+
+/**
+ * ************************************************************************
+ * @brief 安全获取 Json 的值
+ *
+ * @param[in] root  Json::Value
+ * @param[in] key  键
+ *
+ * @return 值
+ * @exception 键不存在或类型错误,throw std::invalid_argument
+ * ************************************************************************
+ */
+template <FROM_JSON_TYPE T>
+static inline T get_value(const Json::Value &root, std::string_view key) {
+    // 成员校验
+    if (!root.isMember(key.data())) {
+        throw std::invalid_argument(std::format("key[{}] 不是 json 的成员!", key));
+    }
+
+    // 类型校验()
+    if (!root[key.data()].is<T>()) {
+        throw std::invalid_argument(std::format("key[{}] 不是期望的类型 {}!", key, detail::get_expect_type<T>()));
+    }
+
+    return root[key.data()].as<T>(); // Jsoncpp 最新版支持 as<T>()
+}
+
+/**
+ * ************************************************************************
+ * @brief 安全获取 Json 的值(默认值)
+ *
+ * @param[in] root  Json::Value
+ * @param[in] key  键
+ *
+ * @return
+ * ************************************************************************
+ */
+template <FROM_JSON_TYPE T>
+static inline T get_value_or(const Json::Value &root, std::string_view key, T data) {
+    try {
+        return get_value<T>(root, key);
+    } catch (const std::invalid_argument&) {
+        return data;
+    }
+}
+
+} // namespace module::from_json

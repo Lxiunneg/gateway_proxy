@@ -1,9 +1,15 @@
-// main.cpp
+#include "httplib.h"
+#include "my_json/my_json.h"
 #include "port_scanner/port_scanner.h"
-#include "gateway/gateway.h"
-#include "to_json/to_json.h"
+#include "simple_log/simple_log.h"
+
+#include <fstream>
+#include <filesystem>
+#include <format>
+#include <regex>
 
 #ifdef WIN32
+#include <Windows.h>
 class CHCP {
 public:
     CHCP() {
@@ -12,206 +18,154 @@ public:
 } chcp;
 #endif // WIN32
 
-#include <filesystem>
+// base
+static uint16_t g_base_port{}; // 基准端口
+static std::string g_host{};
+static uint16_t g_port{};
 
+// scanner
+static uint16_t g_begin{};
+static uint16_t g_end{};
+static uint16_t g_scan_interval{5};
 
+static inline bool load_from_json(std::string_view path) {
+    bool is_error{false};
 
-using namespace module;
-
-// 服务发现 API 返回结构
-struct ServiceSearchRespone {
-    std::size_t cnt;
-    std::vector<uint16_t> machine_list;
-
-    void to_machine_no(uint16_t base_port) {
-        for (auto &elem : machine_list)
-            elem -= base_port;
-    }
-};
-
-// 读取 json 配置文件
-Json::Value load_from_json(std::string_view path) {
     std::fstream file(path.data());
-
     if (!file.is_open()) {
-        throw std::runtime_error(std::format("无法打开文件: {}", path));
+        throw std::runtime_error(std::format("无法打开文件! {}", path));
+    }
+    if (!file.good()) {
+        throw std::runtime_error(std::format("无法使用文件! {}", path));
     }
 
     Json::Value root;
     file >> root;
 
-    return root;
+    try {
+        // base
+        if (!root.isMember("base")) {
+            throw std::invalid_argument("JSON 缺少 base 结构");
+        }
+        auto &base_root = root["base"];
+        g_base_port = module::from_json::get_value<int>(base_root, "base_port");
+        g_host = module::from_json::get_value_or<std::string>(base_root, "host", "0.0.0.0");
+        g_port = module::from_json::get_value_or<int>(base_root, "port", 11000);
+
+        // scanner
+        if (!root.isMember("scanner")) {
+            throw std::invalid_argument("JSON 缺少 scanner 结构");
+        }
+        auto &scanner_root = root["scanner"];
+        g_begin = module::from_json::get_value<int>(scanner_root, "begin");
+        g_end = module::from_json::get_value<int>(scanner_root, "end");
+        g_scan_interval = module::from_json::get_value_or<int>(scanner_root, "scan_interval", 5);
+    } catch (const Json::Exception &ex) {
+        std::cerr << "解析JSON时发生错误" << ex.what() << std::endl;
+        is_error = true;
+    } catch (const std::invalid_argument &ex) {
+        std::cerr << "加载JSON时发生错误" << ex.what() << std::endl;
+        is_error = true;
+    }
+
+    return is_error;
 }
 
 // 获取程序的绝对路径
-std::string get_program_current_path() {
+static inline std::string get_program_current_path() {
     namespace fs = std::filesystem;
     fs::path executable_path = fs::current_path();
     return executable_path.string();
 }
 
-template <typename T>
-T get_value(Json::Value &root, std::string_view key) {
-    if (!root.isMember(key.data())) {
-        throw std::invalid_argument(std::format("Json 文件中缺失 {} 项", key));
-    }
-
-    if (!root[key.data()].is<T>()) {
-        throw std::invalid_argument(std::format("Json 文件中 {} 类型错误", key));
-    }
-
-    return root[key.data()].as<T>();
+// 服务发现 API 返回结构
+struct ServiceSearchRespone {
+    std::size_t cnt;
+    std::vector<uint16_t> machine_list;
 };
 
-template <typename T>
-T get_value_or(Json::Value &root, std::string_view key, T data) {
-    try {
-        return get_value<T>(root, key);
-    } catch (const std::invalid_argument &) {
-        return data;
-    }
+// 失败回复
+struct ErrorRespone {
+    std::string error_msg;
 };
 
 int main() {
     try {
-        auto root = load_from_json(get_program_current_path() + "\\config\\config.json");
+        xiunneg::WSADATARAII wsa_data;
 
-        if (!root.isMember("port_scanner")) {
-            throw std::invalid_argument("Json 文件中缺失 port_scanner");
+        if (load_from_json(std::format("{}\\config\\config.json", get_program_current_path()))) {
+            return -1;
         }
 
-        auto port_scanner_root = root["port_scanner"];
-
-        PortScanner::Config port_scanner_config_{
-            .base = static_cast<unsigned short>(get_value<int>(port_scanner_root, "base")),
-            .begin = static_cast<unsigned short>(get_value<int>(port_scanner_root, "begin")),
-            .end = static_cast<unsigned short>(get_value<int>(port_scanner_root, "end")),
-            .interval = static_cast<unsigned short>(get_value_or<int>(port_scanner_root, "interval", 5000)),
+        xiunneg::PortScanner::Config config{
+            .begin = g_begin,
+            .end = g_end,
+            .scan_interval = g_scan_interval,
         };
+        xiunneg::PortScanner port_scanner(config);
+        port_scanner.run();
 
-        PortScanner port_scanner_(port_scanner_config_);
-        auto psc_logger =
-            std::make_shared<SimpleLogger>("port_scanner_logger",
-                                           SimpleLoggerInterface::LoggerMode::CONSOLE_AND_FILE);
+        httplib::Server proxy_gateway;
+        module::SimpleLogger proxy_gateway_logger("proxy_gateway_logger", module::SimpleLoggerInterface::LoggerMode::CONSOLE_AND_FILE);
 
-        port_scanner_.set_logger(psc_logger)
-            .run();
+        // 服务发现
+        proxy_gateway.Get("/machine-list", [&port_scanner](const httplib::Request &req, httplib::Response &res) {
+            ServiceSearchRespone resp;
+            auto services = port_scanner.get_occupied_ports();
+            resp.cnt = services.size();
+            for (const auto &service_port : services)
+                resp.machine_list.push_back(service_port - g_base_port);
 
-        if (!root.isMember("gateway")) {
-            throw std::invalid_argument("Json 文件中缺失 gateway");
-        }
-
-        auto gateway_root = root["gateway"];
-
-        Gateway gateway(Gateway::Config{
-            .host = get_value<std::string>(gateway_root, "host"),
-            .port = static_cast<unsigned short>(get_value_or<int>(gateway_root, "port", 11000)),
+            res.set_content(module::to_json::dump(module::to_json::to_json(resp), 4), "application/json");
         });
-        auto gateway_logger =
-            std::make_shared<SimpleLogger>("gateway_logger",
-                                           SimpleLoggerInterface::LoggerMode::CONSOLE_AND_FILE);
-        gateway.set_logger(gateway_logger);
 
-        // 注册 target
-        if (!gateway_root.isMember("targets")) {
-            throw std::invalid_argument("Json 文件中 gateway 缺失 targets");
-        }
+        // GET 请求转发 必选参数 machine_no[服务号]
+        proxy_gateway.Get("/.*", [&](const httplib::Request &req, httplib::Response &res) {
+            if (!req.has_param("machine_no")) {
+                ErrorRespone resp;
+                resp.error_msg = "缺少参数 machine_no";
+                proxy_gateway_logger.error(std::format("{}:{} {}", req.remote_addr, req.remote_port, resp.error_msg));
+                res.set_content(module::to_json::dump(module::to_json::to_json(resp), 4), "application/json");
+                return;
+            }
 
-        auto &targets_root = gateway_root["targets"];
+            int machien_no{};
 
-        for (auto &elem : targets_root) {
-            // 提取配置
-            auto target = get_value<std::string>(elem, "target");
+            try {
+                machien_no = std::stoi(req.get_param_value("machine_no"));
+            } catch (const std::out_of_range &e) {
+                ErrorRespone resp;
+                resp.error_msg = std::format("参数 machine_no[{}] 超出范围! {}", req.get_param_value("machine_no"), e.what());
+                proxy_gateway_logger.error(std::format("{}:{} {}", req.remote_addr, req.remote_port, resp.error_msg));
+                res.set_content(module::to_json::dump(module::to_json::to_json(resp), 4), "application/json");
+                return;
+            }
 
-            // 构建 Handler 并注册
-            gateway.register_proxy_get_api(target, [&](const httplib::Request &req, httplib::Response &res) {
-                Json::Value resp_json;
-                int machine_no = -1;
-                int shift = -1;
+            int target_sevice = g_base_port + machien_no;
 
-                // 必选参数 machine_no
-                if (!req.has_param("machine_no")) {
-                    // 不包含必选参数,请求不合法
-                    resp_json["error_log"] = "不包含必选参数 machine_no,请求非法!";
-                    res.set_content(to_json::dump(resp_json, 4), "application/json");
-                    return;
-                } else {
-                    try {
-                        machine_no = std::stoi(req.get_param_value("machine_no"));
-                    } catch (const std::out_of_range &e) {
-                        resp_json["error_log"] = std::format("参数 machine_no,超出范围!{}", e.what());
-                        res.set_content(to_json::dump(resp_json, 4), "application/json");
-                        return;
-                    }
-                }
+            // 本地转发
+            auto services = port_scanner.get_occupied_ports();
+            if (services.find(target_sevice) != services.end()) {
+                httplib::Client client("127.0.0.1", target_sevice);
+                httplib::Headers headers = req.headers;
+                auto client_resp = client.Get(req.target, headers);
+                proxy_gateway_logger.info(std::format("{}:{} GET {}", req.remote_addr, req.remote_port, req.target));
+                res.set_content(client_resp->body, "application/json");
+            } else {
+                ErrorRespone resp;
+                resp.error_msg = std::format("该服务[{}]不存在!", req.get_param_value("machine_no"));
+                proxy_gateway_logger.error(std::format("{}:{} {}", req.remote_addr, req.remote_port, resp.error_msg));
+                res.set_content(module::to_json::dump(module::to_json::to_json(resp), 4), "application/json");
+                return;
+            }
+        });
 
-                // 可选参数 shift
-                if (req.has_param("shift")) {
-                    try {
-                        shift = std::stoi(req.get_param_value("shift"));
-
-                        if (!(0 <= shift && shift <= 2)) {
-                            throw std::out_of_range("");
-                        }
-
-                    } catch (const std::out_of_range &e) {
-                        resp_json["error_log"] = std::format("参数 shift ,超出范围[0,2]!{}", e.what());
-                        res.set_content(to_json::dump(resp_json, 4), "application/json");
-                        return;
-                    }
-                }
-
-                // 代理发送
-                auto using_ports_set = port_scanner_.get_using_ports();
-                auto target_port = port_scanner_config_.base + machine_no;
-                if (using_ports_set.find(target_port) != using_ports_set.end()) {
-                    try {
-                        // 因端口信息实时变化，每次使用新的客户端
-                        httplib::Client cli("127.0.0.1", target_port); // 本地代理
-                        httplib::Headers headers;
-                        headers = req.headers; // 头部转发
-
-                        std::string proxy_target = "";
-                        auto pos = req.target.find('?');
-                        if (pos != std::string::npos) {
-                            proxy_target = req.target.substr(0, pos);
-                        }
-
-                        if (shift != -1) {
-                            // 有选择 shift 参数
-                            proxy_target += std::format("?shift={}", shift);
-                        }
-
-                        auto proxy_res = cli.Get(proxy_target, headers);
-
-                        res.set_content(proxy_res->body, "application/json");
-                        gateway_logger->info(std::format("{}:{} GET [machine_no={}] {}", req.remote_addr, req.remote_port, machine_no, proxy_target));
-                    } catch (const std::exception &e) {
-                        gateway_logger->error(std::format("{}:{} GET {} 发生错误: {}", req.remote_addr, req.remote_port, req.target ,e.what()));
-                    }
-
-                } else {
-                    resp_json["error_log"] = std::format("该服务编号 [{}] 不在线!", machine_no);
-                    res.set_content(to_json::dump(resp_json, 4), "application/json");
-                }
-            });
-        }
-
-        gateway
-            // 服务发现 API
-            .register_proxy_get_api("/machine-list", [&port_scanner_, &port_scanner_config_, &gateway_logger](const httplib::Request &req, httplib::Response &res) {
-                ServiceSearchRespone response{};
-
-                for (const auto &port : port_scanner_.get_using_ports())
-                    response.machine_list.push_back(port);
-                response.to_machine_no(port_scanner_config_.base);
-                response.cnt = response.machine_list.size();
-
-                res.set_content(to_json::dump(to_json::to_json(response)), "application/json");
-                gateway_logger->info(std::format("{}:{} GET /machine-list", req.remote_addr, req.remote_port));
-            })
-            .run();
+        proxy_gateway.listen(g_host, g_port);
     } catch (const std::exception &e) {
-        std::cout << e.what() << std::endl;
+        std::cerr << "程序发生错误: " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "程序发生未知错误!" << std::endl;
     }
+
+    return 0;
 }

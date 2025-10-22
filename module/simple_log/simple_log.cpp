@@ -2,9 +2,7 @@
 #include "simple_log.h"
 
 // c++ string format
-#include <fmt/color.h>
-#include <fmt/core.h>
-#include <fmt/format.h>
+#include <format>
 
 #include <iostream>
 #include <chrono>
@@ -41,10 +39,10 @@ SimpleLogger::~SimpleLogger() {
 void SimpleLogger::info(std::string_view log) {
     std::unique_lock lck(logger_mtx_);
 
-    std::string formatting_log = fmt::format("[{}][{}][{}] {}\n",
+    std::string formatting_log = std::format("[{}][{}][{}] {}\n",
                                              get_now_timestamp_string(),
                                              name_,
-                                             "info", // 将 "info" 格式化为绿色
+                                             "INFO",
                                              log);
 
     if (use_console_) {
@@ -58,10 +56,27 @@ void SimpleLogger::info(std::string_view log) {
 void SimpleLogger::error(std::string_view log) {
     std::unique_lock lck(logger_mtx_);
 
-    std::string formatting_log = fmt::format("[{}][{}][{}] {}\n",
+    std::string formatting_log = std::format("[{}][{}][{}] {}\n",
                                              get_now_timestamp_string(),
                                              name_,
-                                             "error", // 将 "error" 格式化为红色
+                                             "ERROR",
+                                             log);
+
+    if (use_console_) {
+        std::cout << formatting_log;
+    }
+    if (use_file_) {
+        (*log_file_) << formatting_log;
+    }
+}
+
+void SimpleLogger::warn(std::string_view log) {
+    std::unique_lock lck(logger_mtx_);
+
+    std::string formatting_log = std::format("[{}][{}][{}] {}\n",
+                                             get_now_timestamp_string(),
+                                             name_,
+                                             "WARN",
                                              log);
 
     if (use_console_) {

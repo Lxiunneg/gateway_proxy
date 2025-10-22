@@ -5,29 +5,33 @@ cmake_minimum_required(VERSION 3.10)
 set(CMAKE_CXX_STANDARD 20)
 
 # 项目名称
-project(Spider_Model_Gateway)
+project(GatewayApp)
 
-file(GLOB_RECURSE SRC
-    main.cpp
-    "module/*.h"
-    "module/*.hpp"
-    "module/*.cpp"
-    "module/*.cc"
+# port_scanner
+file(GLOB PORT_SCANNER
+    "port_scanner/*.h"
+    "port_scanner/*.cpp"
 )
 
-# 添加可执行文件
-# 语法：add_executable(可执行文件名 源文件)
-add_executable(${PROJECT_NAME} ${SRC})
+# module
+file(GLOB_RECURSE MODULE
+    "module/*.h"
+    "module/*.cpp"
+)
 
-target_include_directories(${PROJECT_NAME} PRIVATE
+add_executable(GatewayApp 
+    main.cpp
+    ${PORT_SCANNER} 
+    ${MODULE}   
+)
+
+target_include_directories(GatewayApp PRIVATE
     module
     third-party
 )
 
-find_package(jsoncpp CONFIG REQUIRED) # json
-find_package(Boost REQUIRED COMPONENTS pfr) # 反射
+find_package(Boost REQUIRED COMPONENTS beast)
+target_link_libraries(GatewayApp PRIVATE Boost::beast)
 
-target_link_libraries(${PROJECT_NAME} PRIVATE 
-    JsonCpp::JsonCpp
-    Boost::pfr
-)
+
+add_subdirectory(port_scanner)
