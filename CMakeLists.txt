@@ -30,8 +30,4 @@ target_include_directories(GatewayApp PRIVATE
     third-party
 )
 
-find_package(Boost REQUIRED COMPONENTS beast)
-target_link_libraries(GatewayApp PRIVATE Boost::beast)
-
-
 add_subdirectory(port_scanner)
